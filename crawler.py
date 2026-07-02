@@ -263,10 +263,17 @@ def _fetch_board(board: Board) -> list[Notice]:
     ) as client:
         for page in range(1, LIST_PAGES_PER_BOARD + 1):
             url = f"{board.base}{board.list_path}?pageIndex={page}"
-            try:
-                resp = client.get(url)
-                resp.raise_for_status()
-            except httpx.HTTPError:
+            resp = None
+            for attempt in range(2):  # 일시적 네트워크 오류 1회 재시도
+                try:
+                    resp = client.get(url)
+                    resp.raise_for_status()
+                    break
+                except httpx.HTTPError:
+                    resp = None
+                    if attempt == 0:
+                        time.sleep(0.5)
+            if resp is None:
                 continue  # 페이지 하나 실패해도 나머지는 반환
             parser = _parse_list_style if board.style == "list" else _parse_table_style
             for n in parser(resp.text, board):
@@ -286,11 +293,13 @@ def get_board_notices(board_key: str, force_refresh: bool = False) -> tuple[list
             return cached[1], datetime.fromtimestamp(cached[0]).isoformat(timespec="seconds")
     items = _fetch_board(board)
     with _cache_lock:
-        if items or board_key not in _cache:
+        if items:
             _cache[board_key] = (now, items)
-        else:
+        elif board_key in _cache:
             # 이번 수집이 실패(0건)면 이전 캐시 유지
             now, items = _cache[board_key]
+        # 빈 결과는 캐시하지 않는다 — 부팅 직후 일시 실패가
+        # TTL 동안 '공지 없음'으로 굳는 것을 방지 (다음 호출이 재시도)
     return items, datetime.fromtimestamp(now).isoformat(timespec="seconds")
 
 

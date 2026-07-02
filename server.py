@@ -194,13 +194,20 @@ def weekly_digest(days: int = 7) -> dict:
 if __name__ == "__main__":
     import threading
 
-    # 서버 시작 시 백그라운드 예열 — 첫 질문의 콜드스타트 지연 완화
+    # 서버 시작 시 백그라운드 예열 — 첫 질문의 콜드스타트 지연 완화.
+    # 컨테이너 부팅 직후에는 네트워크가 준비 전일 수 있어 성공할 때까지 재시도한다.
     def _warmup() -> None:
-        try:
-            items, _ = get_all_notices("all")
-            enrich_deadlines(items)
-        except Exception:
-            pass  # 예열 실패는 치명적이지 않음 — 첫 호출이 대신 수집
+        import time as _time
+
+        for _ in range(5):
+            try:
+                items, _ts = get_all_notices("all")
+                if items:
+                    enrich_deadlines(items)
+                    return
+            except Exception:
+                pass
+            _time.sleep(10)
 
     threading.Thread(target=_warmup, daemon=True).start()
 
