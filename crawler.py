@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timedelta
 
@@ -297,18 +298,31 @@ def get_all_notices(board_key: str = "all") -> tuple[list[Notice], dict[str, str
     keys = list(BOARDS) if board_key == "all" else [board_key]
     all_items: list[Notice] = []
     fetched_at: dict[str, str] = {}
-    for key in keys:
-        items, ts = get_board_notices(key)
-        all_items.extend(items)
-        fetched_at[key] = ts
+    # 게시판 수집을 병렬화해 콜드스타트 지연을 줄인다
+    with ThreadPoolExecutor(max_workers=len(keys)) as pool:
+        for key, (items, ts) in zip(keys, pool.map(get_board_notices, keys)):
+            all_items.extend(items)
+            fetched_at[key] = ts
     all_items.sort(key=lambda n: (n.posted_date or "", n.notice_id), reverse=True)
     return all_items, fetched_at
 
 
 # ---------------------------------------------------------------- detail
 
+_detail_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+_detail_lock = threading.Lock()
+DETAIL_TTL_SECONDS = 6 * 60 * 60
+
+
 def fetch_notice_detail(board_key: str, notice_id: str) -> dict:
-    """공지 상세: 본문 텍스트와 첨부파일 목록."""
+    """공지 상세: 본문 텍스트와 첨부파일 목록. (6시간 캐시)"""
+    key = (board_key, str(notice_id))
+    now = time.time()
+    with _detail_lock:
+        cached = _detail_cache.get(key)
+        if cached and now - cached[0] < DETAIL_TTL_SECONDS:
+            return cached[1]
+
     board = BOARDS[board_key]
     url = board.base + board.detail_path.format(id=notice_id)
     with httpx.Client(
@@ -319,10 +333,10 @@ def fetch_notice_detail(board_key: str, notice_id: str) -> dict:
     soup = BeautifulSoup(resp.text, "lxml")
 
     cont = soup.select_one(".view_cont")
-    content = cont.get_text("\n", strip=True) if cont else ""
-    content = re.sub(r"\n{3,}", "\n\n", content)
     if cont is None:
         raise ValueError(f"공지를 찾을 수 없습니다 (board={board_key}, id={notice_id})")
+    # 인라인 태그 때문에 단어가 줄바꿈으로 토막나는 문제 → 공백 병합 후 정규화
+    content = re.sub(r"\s+", " ", cont.get_text(" ", strip=True)).strip()
 
     files = [
         fa.get_text(" ", strip=True)
@@ -333,18 +347,60 @@ def fetch_notice_detail(board_key: str, notice_id: str) -> dict:
     title_el = soup.select_one(".board_view h4, .board_view .tit, .view_tit, h3")
     title = title_el.get_text(" ", strip=True) if title_el else (soup.title.get_text(strip=True) if soup.title else "")
 
-    deadline = extract_deadline(title + "\n" + content)
-    return {
+    # 마감일은 제목 추출을 우선한다 — 목록(list_notices)과 항상 같은 답을 하기 위함.
+    # 본문에는 교육일·행사일 등 다른 날짜가 섞여 있어 제목이 더 신뢰도가 높다.
+    deadline_title = extract_deadline(title)
+    deadline_body = extract_deadline(content) if not deadline_title else None
+    deadline = deadline_title or deadline_body
+
+    result = {
         "board": board_key,
         "board_label": board.label,
-        "notice_id": notice_id,
+        "notice_id": str(notice_id),
         "title": title,
         "content": content[:4000],
         "content_truncated": len(content) > 4000,
         "attachments": files,
         "deadline": deadline,
+        "deadline_source": "title" if deadline_title else ("body" if deadline_body else None),
         "url": url,
     }
+    if not content and files:
+        result["content_note"] = (
+            "본문이 이미지 포스터·첨부파일로만 제공되는 공지입니다. "
+            "신청 방법과 마감일은 원문 링크의 첨부파일에서 확인하세요."
+        )
+
+    with _detail_lock:
+        _detail_cache[key] = (now, result)
+    return result
+
+
+def enrich_deadlines(notices: list[Notice], max_fetch: int = 12, recent_days: int = 45) -> int:
+    """마감일이 없는 최근 공지의 본문까지 조회해 마감일을 보강한다.
+
+    제목에 마감 표기가 없는 공지(장학 공고 등)가 마감 임박 조회에서
+    누락되는 것을 막는다. 상세 캐시를 공유하므로 반복 호출 비용은 낮다.
+    """
+    cutoff = (date.today() - timedelta(days=recent_days)).isoformat()
+    targets = [
+        n for n in notices
+        if n.deadline is None and n.posted_date and n.posted_date >= cutoff
+    ][:max_fetch]
+    if not targets:
+        return 0
+
+    def _try(n: Notice) -> None:
+        try:
+            detail = fetch_notice_detail(n.board, n.notice_id)
+        except Exception:
+            return
+        if detail.get("deadline"):
+            n.deadline = detail["deadline"]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(_try, targets))
+    return sum(1 for n in targets if n.deadline is not None)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from fastmcp import FastMCP
 
-from crawler import BOARDS, fetch_notice_detail, get_all_notices
+from crawler import BOARDS, enrich_deadlines, fetch_notice_detail, get_all_notices
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -97,9 +97,18 @@ def upcoming_deadlines(days: int = 14, board: str = "all") -> dict:
     horizon = today + timedelta(days=days)
     items, fetched_at = get_all_notices(board)
 
+    # 제목에 마감 표기가 없는 최근 공지는 본문까지 조회해 마감일을 보강
+    enrich_deadlines(items)
+
     due = []
+    unknown = []
     for n in items:
         if n.deadline is None:
+            # 마감 미상인 최근 공지도 함께 노출해 누락을 막는다
+            if n.posted_date and date.fromisoformat(n.posted_date) >= today - timedelta(days=21):
+                unknown.append(
+                    {"title": n.title, "board": n.board, "notice_id": n.notice_id, "url": n.url}
+                )
             continue
         d = date.fromisoformat(n.deadline)
         if today <= d <= horizon:
@@ -112,8 +121,12 @@ def upcoming_deadlines(days: int = 14, board: str = "all") -> dict:
         "count": len(due),
         "window": {"from": today.isoformat(), "to": horizon.isoformat()},
         "notices": due,
+        "no_deadline_recent": unknown[:10],
         "fetched_at": fetched_at,
-        "note": "마감일은 공지 제목에서 자동 추출한 값이므로 원문 확인을 권장합니다.",
+        "note": (
+            "마감일은 공지 제목·본문에서 자동 추출한 값이므로 신청 전 원문 확인을 권장합니다. "
+            "no_deadline_recent는 마감일이 확인되지 않은 최근 3주 내 공지로, 신청 가능한 공고가 있을 수 있습니다."
+        ),
     }
 
 
@@ -179,5 +192,17 @@ def weekly_digest(days: int = 7) -> dict:
 
 
 if __name__ == "__main__":
+    import threading
+
+    # 서버 시작 시 백그라운드 예열 — 첫 질문의 콜드스타트 지연 완화
+    def _warmup() -> None:
+        try:
+            items, _ = get_all_notices("all")
+            enrich_deadlines(items)
+        except Exception:
+            pass  # 예열 실패는 치명적이지 않음 — 첫 호출이 대신 수집
+
+    threading.Thread(target=_warmup, daemon=True).start()
+
     port = int(os.environ.get("PORT", "8080"))
     mcp.run(transport="http", host="0.0.0.0", port=port, path="/mcp")
