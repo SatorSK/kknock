@@ -33,9 +33,18 @@ def _today_kst() -> date:
     return datetime.now(KST).date()
 
 
-@mcp.tool
+# 모든 도구는 공개 게시판을 읽기만 한다 — 파괴적 동작 없음
+_READONLY = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": True,
+}
+
+
+@mcp.tool(annotations={"title": "게시판 안내", **_READONLY})
 def list_boards() -> dict:
-    """kknock이 수집하는 게시판 목록과 각 게시판의 설명을 반환합니다.
+    """똑똑 - 캠퍼스 공지 에이전트가 수집하는 게시판 목록과 각 게시판의 설명을 반환합니다.
 
     사용자가 "어떤 공지를 볼 수 있어?"라고 물을 때 사용하세요.
     """
@@ -48,9 +57,9 @@ def list_boards() -> dict:
     }
 
 
-@mcp.tool
+@mcp.tool(annotations={"title": "공지 검색", **_READONLY})
 def list_notices(board: str = "all", keyword: str = "", limit: int = 15) -> dict:
-    """동국대 최신 공지 목록을 반환합니다 (최신순).
+    """똑똑 - 캠퍼스 공지 에이전트의 공지 검색 도구. 동국대 최신 공지 목록을 반환합니다 (최신순).
 
     Args:
         board: haksa(학사) | janghak(장학) | general(일반공지·국제교류) | itrade(국제통상학과) | all(전체)
@@ -78,9 +87,9 @@ def list_notices(board: str = "all", keyword: str = "", limit: int = 15) -> dict
     }
 
 
-@mcp.tool
+@mcp.tool(annotations={"title": "마감 임박 조회", **_READONLY})
 def upcoming_deadlines(days: int = 14, board: str = "all") -> dict:
-    """마감일이 임박한 공지(신청·모집·접수)를 마감 순으로 반환합니다.
+    """똑똑 - 캠퍼스 공지 에이전트의 마감 임박 조회 도구. 마감일이 임박한 공지(신청·모집·접수)를 마감 순으로 반환합니다.
 
     Args:
         days: 오늘부터 며칠 이내 마감까지 볼지 (기본 14일, 1~60)
@@ -130,9 +139,9 @@ def upcoming_deadlines(days: int = 14, board: str = "all") -> dict:
     }
 
 
-@mcp.tool
+@mcp.tool(annotations={"title": "공지 상세", **_READONLY})
 def get_notice(board: str, notice_id: str) -> dict:
-    """공지 하나의 본문 전체와 첨부파일 목록을 반환합니다.
+    """똑똑 - 캠퍼스 공지 에이전트의 공지 상세 도구. 공지 하나의 본문 전체와 첨부파일 목록을 반환합니다.
 
     Args:
         board: 공지가 속한 게시판 key (haksa | janghak | general | itrade)
@@ -153,9 +162,9 @@ def get_notice(board: str, notice_id: str) -> dict:
         }
 
 
-@mcp.tool
+@mcp.tool(annotations={"title": "주간 다이제스트", **_READONLY})
 def weekly_digest(days: int = 7) -> dict:
-    """최근 N일간 올라온 공지를 게시판별로 묶어 요약 다이제스트로 반환합니다.
+    """똑똑 - 캠퍼스 공지 에이전트의 주간 요약 도구. 최근 N일간 올라온 공지를 게시판별로 묶어 다이제스트로 반환합니다.
 
     Args:
         days: 최근 며칠치를 볼지 (기본 7일, 1~30)
